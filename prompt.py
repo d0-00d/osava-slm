@@ -27,10 +27,30 @@ Output schema (always use exactly this structure):
 }
 
 threatType values you may use:
-traffic_spike, failed_logins, port_scan, data_exfiltration, lateral_movement,
-malware, phishing, ransomware, privilege_escalation, supply_chain, sql_injection,
-xss, rce, credential_stuffing, reconnaissance, cryptomining, unknown
+<THREAT_TYPES>
 """
+
+# threatType vocabulary, versioned per prompt variant. v1 is byte-identical to
+# the list v1-v4 were trained under. v2 adds the three families endpoint
+# telemetry actually produces and v1 had no slot for -- credential dumping,
+# persistence, and defence evasion all fell through to `unknown` or were
+# mislabelled `malware`, which is why threatType was `unknown` for half of all
+# threat rows.
+THREAT_TYPES = {
+    "v1": ("traffic_spike, failed_logins, port_scan, data_exfiltration, lateral_movement,\n"
+           "malware, phishing, ransomware, privilege_escalation, supply_chain, sql_injection,\n"
+           "xss, rce, credential_stuffing, reconnaissance, cryptomining, unknown"),
+    "v2": ("traffic_spike, failed_logins, port_scan, data_exfiltration, lateral_movement,\n"
+           "malware, phishing, ransomware, privilege_escalation, supply_chain, sql_injection,\n"
+           "xss, rce, credential_stuffing, reconnaissance, cryptomining, credential_access,\n"
+           "persistence, defense_evasion, unknown"),
+}
+VARIANT_THREATS = {"shipped": "v1", "strict": "v1", "strict2": "v2"}
+
+
+def threat_types(variant="strict"):
+    import re
+    return sorted(set(re.findall(r"[a-z_]+", THREAT_TYPES[VARIANT_THREATS[variant]])))
 
 TAIL = {
     # verbatim from HIRA/backend/ollama/SENTRIClassifier.Modelfile as it shipped,
@@ -45,6 +65,18 @@ TAIL = {
 	executing from temp paths, office applications spawning shells, service binaries
 	running as SYSTEM from non-standard paths, encoded or hidden-window commands --
 	rate it "high" or "critical" even if benign explanations are conceivable.
+	Reserve "none" and "low" for activity that is affirmatively normal: signed
+	binaries from system paths with expected parents. Do not under-rate clear
+	technique matches.""",
+    # strict2: strict, with two fixes that change the prompt and therefore
+    # require retraining -- the threatType list above (v2), and "high" or
+    # "critical" -> "high". `critical` left the scale under R5 but survived
+    # in this sentence, so the model was told to use a value it may not emit.
+    "strict2": """
+	You are precise. When an event shows a known attack technique -- unsigned binaries
+	executing from temp paths, office applications spawning shells, service binaries
+	running as SYSTEM from non-standard paths, encoded or hidden-window commands --
+	rate it "high" even if benign explanations are conceivable.
 	Reserve "none" and "low" for activity that is affirmatively normal: signed
 	binaries from system paths with expected parents. Do not under-rate clear
 	technique matches.""",
@@ -81,8 +113,10 @@ PREFIX = '{"severity": "'
 
 
 def system_prompt(variant="strict", scale="4way", override=True):
-    body = BASE.replace("<SEVERITY_VALUES>",
-                        " or ".join(f'"{s}"' for s in SCALES[scale])) + TAIL[variant]
+    body = (BASE.replace("<SEVERITY_VALUES>",
+                         " or ".join(f'"{s}"' for s in SCALES[scale]))
+                .replace("<THREAT_TYPES>", THREAT_TYPES[VARIANT_THREATS[variant]])
+            + TAIL[variant])
     return (OVERRIDE + body) if override else body
 
 

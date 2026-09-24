@@ -20,7 +20,9 @@ Checks, per event:
   key_vocab     every indicator key is in the closed vocabulary (R6)
   grounded      every indicator value is actually present in the event
   verdict       the reasoning's verdict sentence agrees with the severity
-  supported     a threat verdict cites at least one incriminating indicator
+  supported     a threat verdict cites at least one incriminating indicator, or
+                says honestly (context_dependent) that no single field does.
+                Reassuring evidence presented as the reason is what fails.
 """
 
 import argparse
@@ -31,11 +33,9 @@ from pathlib import Path
 
 import prompt as P
 from indicators import INDICATORS
-from targets import BENIGN_KEYS, VERDICT
+from targets import BENIGN_KEYS, VERDICT, VERDICT_CONTEXT
 
-THREAT_TYPES = set(re.findall(
-    r"[a-z_]+", re.search(r"threatType values you may use:\n(.*)", P.BASE, re.S)
-    .group(1)))
+THREAT_TYPES = set(P.threat_types("strict"))     # reset from --variant in main()
 SCALE = set(P.SCALES["4way"])
 
 
@@ -69,9 +69,10 @@ def grounded(value, event):
 
 def verdict_of(reasoning):
     r = reasoning.lower()
-    for cls, sentence in VERDICT.items():
-        if sentence[:40].lower() in r:
-            return cls
+    for table in (VERDICT, VERDICT_CONTEXT):
+        for cls, sentence in table.items():
+            if sentence[:40].lower() in r:
+                return cls
     return None
 
 
@@ -106,9 +107,13 @@ def check(event, raw):
     bucket = P.BUCKET.get(sev)
     said = verdict_of(str(out.get("reasoning", "")))
     rec["verdict"] = said is None or said == bucket
+    rec["context_dependent"] = "context_dependent" in ind
     if bucket in ("malicious", "suspicious"):
         rec["supported"] = any(k not in BENIGN_KEYS for k in ind)
     return rec
+
+
+VARIANT = "strict"
 
 
 def generate(model_path, rows, max_new):
@@ -120,7 +125,7 @@ def generate(model_path, rows, max_new):
         attn_implementation="sdpa").eval()
     out = {}
     for i, r in enumerate(rows, 1):
-        p = P.build_prompt(tok, r["event"], "strict", "4way")
+        p = P.build_prompt(tok, r["event"], VARIANT, "4way")
         ids = tok(p, return_tensors="pt", add_special_tokens=False).input_ids.to("cuda:0")
         with torch.no_grad():
             g = m.generate(ids, max_new_tokens=max_new, do_sample=False,
@@ -138,7 +143,13 @@ def main():
                     help="JSON {id: raw_text} from another runtime, e.g. Ollama")
     ap.add_argument("--max-new", type=int, default=240)
     ap.add_argument("--out", default="logs/hallucination.json")
+    ap.add_argument("--variant", default="strict", choices=list(P.TAIL),
+                    help="prompt variant: sets the threatType list checked against")
     args = ap.parse_args()
+    THREAT_TYPES.clear()
+    THREAT_TYPES.update(P.threat_types(args.variant))
+    global VARIANT
+    VARIANT = args.variant
 
     rows = [json.loads(l) for l in Path(args.eval_set).read_text().splitlines() if l.strip()]
     if args.responses:
@@ -158,6 +169,8 @@ def main():
     keys = Counter(k for r in recs.values() for k in r["bad_keys"])
     if keys:
         print(f"\ninvented indicator keys: {dict(keys.most_common(8))}")
+    cd = sum(1 for r in recs.values() if r.get("context_dependent"))
+    print(f"\n  context_dependent (honestly unexplained): {cd}/{n}")
     ug = [(i, k, v) for i, r in recs.items() for k, v in r["ungrounded"]]
     if ug:
         print(f"\nungrounded indicator values ({len(ug)}):")

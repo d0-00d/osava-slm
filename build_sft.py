@@ -31,6 +31,7 @@ from transformers import AutoTokenizer
 
 import prompt as P
 import targets
+from boundary import pblind
 from signature import coarse_signature, signature
 
 
@@ -61,6 +62,19 @@ def main():
     if leaked:
         raise SystemExit(f"{len(leaked)} training rows share an eval behaviour "
                          f"signature: {leaked[:10]}")
+    # Action quarantine. The exact-signature check above passes on a
+    # technicality: signature() includes the parent process, so a generator
+    # that picks parents at random manufactures "distinct" behaviours out of
+    # byte-identical commands -- 16 of the original 50 eval events shared their
+    # action with training. Any training row whose action (parent aside)
+    # appears in the eval set is dropped, whatever produced it.
+    ev_act = {pblind(r) for r in ev}
+    before = len(rows)
+    dropped = Counter(r["gold"] for r in rows if pblind(r) in ev_act)
+    rows = [r for r in rows if pblind(r) not in ev_act]
+    print(f"action quarantine: dropped {before - len(rows)} training rows "
+          f"sharing an eval action {dict(dropped)}")
+
     coarse_hits = sum(1 for r in rows
                       if coarse_signature(targets.parse(r["event"])) in ev_coarse)
     print(f"eval quarantine: exact 0/{len(rows)} | "
@@ -86,7 +100,7 @@ def main():
     split = {"train": [], "val": []}
     lens, bad = [], 0
     for r in rows:
-        tgt = targets.build(r)
+        tgt = targets.build(r, P.VARIANT_THREATS[args.variant])
         if tgt["severity"] not in P.SCALES[args.scale]:
             bad += 1
             continue

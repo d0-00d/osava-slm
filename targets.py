@@ -36,6 +36,7 @@ LOLBINS = {
     "msdt.exe", "hh.exe", "ftp.exe", "esentutl.exe", "extrac32.exe",
     "makecab.exe", "expand.exe", "replace.exe", "print.exe", "scriptrunner.exe",
     "mavinject.exe", "sc.exe", "schtasks.exe", "at.exe", "reg.exe",
+    "csc.exe", "jsc.exe", "vbc.exe", "msxsl.exe",
 }
 SHELLS = {"cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe",
           "mshta.exe", "bash.exe", "wsl.exe"}
@@ -78,10 +79,14 @@ EXPECTED = {
     "taskeng.exe": {"cmd.exe", "powershell.exe", "msiexec.exe"},
     "msiexec.exe": {"msiexec.exe", "rundll32.exe"},
     "code.exe": {"code.exe", "cmd.exe", "powershell.exe", "node.exe", "git.exe"},
+    # a build tool launching its own toolchain is what builds are
+    "msbuild.exe": {"tracker.exe", "csc.exe", "vbcscompiler.exe", "cl.exe", "link.exe",
+                    "msbuild.exe", "conhost.exe"},
 }
 
 RE_HIDDEN = re.compile(r"(?i)(-w(?:indow)?s?(?:tyle)?\s+h(?:idden)?\b|"
-                       r"createnowindow|\bwindowstyle\s*=\s*hidden)")
+                       r"createnowindow|\bwindowstyle\s*=\s*hidden|"
+                       r"\bconhost(?:\.exe)?\b[^\n]*--headless)")
 RE_ENCODED = re.compile(r"(?i)(-e(?:nc|ncoded)?(?:command)?\s+[A-Za-z0-9+/=]{16,}|"
                         r"frombase64string|\[convert\]::|-enc\b|-encodedcommand\b)")
 RE_CRADLE = re.compile(r"(?i)(invoke-webrequest|invoke-restmethod|\biwr\b|\bcurl\b|"
@@ -94,10 +99,14 @@ RE_DISCOVERY = re.compile(r"(?i)\b(whoami|systeminfo|nltest|net\s+(user|group|"
                           r"localgroup|view|share|accounts)|net1\s+(user|group)|"
                           r"ipconfig|arp\s+-a|nbtstat|quser|qwinsta|dsquery|"
                           r"tasklist|hostname|netstat|route\s+print|"
-                          r"wmic\s+(computersystem|os|process|qfe|useraccount))\b")
-RE_CRED = re.compile(r"(?i)(sekurlsa|logonpasswords|lsass|mimikatz|ntds\.dit|"
+                          r"wmic(?:\.exe)?\s+(computersystem|os|process|qfe|useraccount))\b")
+# `lsass` is deliberately NOT a bare term: it matched lsass.exe's own command
+# line, reporting the process merely running as credential dumping. Access to
+# it is caught by the dump tools (procdump, comsvcs MiniDump) and lsass.dmp.
+RE_CRED = re.compile(r"(?i)(sekurlsa|logonpasswords|lsass\.dmp|mimikatz|ntds\.dit|"
                      r"\bsam\b\s+save|reg\s+save\s+hk\w*\\+(sam|security|system)|"
-                     r"comsvcs\.dll[^|]*?minidump|vaultcmd|dpapi)")
+                     r"comsvcs\.dll[^|]*?minidump|vaultcmd|dpapi|ntdsutil[^|]*?\bifm\b|"
+                     r"procdump[^|]*?lsass|\bsam\b[^|]*?\bsave\b)")
 RE_ADMIN_SHARE = re.compile(r"(?i)\\\\[^\\]+\\(admin\$|ipc\$|c\$)")
 RE_IP = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 
@@ -109,6 +118,107 @@ RE_AUTORUN = re.compile(r"(?i)(\\currentversion\\run(once)?\b|\\winlogon\\(shell
 RE_ANTIFOREN = re.compile(r"(?i)(vssadmin[^|]*?delete\s+shadows|wevtutil\s+cl|"
                           r"clear-eventlog|bcdedit[^|]*?(recoveryenabled|bootstatuspolicy)|"
                           r"wbadmin\s+delete|cipher\s+/w|fsutil\s+usn\s+deletejournal)")
+
+
+# ---------------------------------------------------------------- technique rules
+#
+# Added after hallucination_check.py showed 56% of threat targets carried no
+# incriminating indicator: 623 of those 661 rows were REAL captures of named
+# techniques this file had no rule for. Every rule below matches a verb or a
+# specific location, never a bare path -- a rule keyed on the Run-key path
+# alone flagged `reg query` (a read) as persistence, twice.
+
+# Auto-elevating binaries: the UACME class. Normal launchers are the shell and
+# the service/AppInfo hosts; anything else launching them, or any of them
+# spawning a shell, is how UAC is bypassed.
+AUTO_ELEVATE = {"fodhelper.exe", "computerdefaults.exe", "sdclt.exe", "eventvwr.exe",
+                "compmgmtlauncher.exe", "wsreset.exe", "slui.exe", "changepk.exe",
+                "sysprep.exe", "pkgmgr.exe", "wusa.exe", "consent.exe", "cliconfg.exe",
+                "perfmon.exe", "colorcpl.exe", "iscsicpl.exe", "dccw.exe", "ieinstal.exe"}
+ELEVATE_LAUNCHERS = {"explorer.exe", "svchost.exe", "services.exe", "mmc.exe", "winlogon.exe",
+                     "msiexec.exe", "wuauclt.exe", "taskhostw.exe", "taskeng.exe"}
+ACCESSIBILITY = {"sethc.exe", "utilman.exe", "osk.exe", "magnify.exe", "narrator.exe",
+                 "displayswitch.exe", "atbroker.exe"}
+ACCESS_LAUNCHERS = {"winlogon.exe", "utilman.exe", "atbroker.exe", "explorer.exe"}
+# the parent is the signal: whatever these launch was launched *through* them
+PROXY_PARENTS = {"wmic.exe", "wmiprvse.exe", "pcalua.exe", "forfiles.exe", "mshta.exe",
+                 "rundll32.exe", "regsvr32.exe", "msbuild.exe", "installutil.exe",
+                 "cmstp.exe", "scriptrunner.exe", "regasm.exe", "regsvcs.exe", "odbcconf.exe"}
+# binaries whose home is not System32 -- without this, every explorer.exe event
+# was reported as masquerading, because C:\Windows is not a SYSTEM_DIR
+HOME_DIR = {"explorer.exe": "c:\\windows", "psexesvc.exe": "c:\\windows"}
+MASQ_NAMES = SYSTEM_NAMES | AUTO_ELEVATE | ACCESSIBILITY
+PAYLOAD_EXT = (".exe", ".dll", ".scr", ".hta", ".js", ".jse", ".vbs", ".vbe", ".ps1",
+               ".bat", ".cmd", ".sct", ".wsf", ".msi")
+WRITABLE = TEMP_DIRS + ("\\desktop\\", "\\start menu\\")
+
+RE_DECORATED = re.compile(r"^(?:\[\d+\]|\(\d+\)\s*)(.+)$")
+RE_APPCMD_CRED = re.compile(r"(?i)\bappcmd(?:\.exe)?\b[^\n]*\blist\s+(?:apppool|vdir)\b[^\n]*/text:")
+RE_REVSHELL = re.compile(r"(?i)(\b(?:nc|ncat|nc64|netcat)(?:\.exe)?\b[^\n]*\s-[ec]\s|"
+                         r"net\.sockets\.tcpclient|/bin/(?:ba)?sh\s+-i)")
+RE_ACCOUNT = re.compile(r"(?i)\bnet1?(?:\.exe)?\b[^\n]*\b(?:user|localgroup|group)\b[^\n]*/(?:add|delete)")
+RE_SVC_CREATE = re.compile(r"(?i)\bsc(?:\.exe)?\s+(?:\\\\\S+\s+)?(?:create|config)\b[^\n]*binpath")
+RE_RECOVERY = re.compile(r"(?i)(vssadmin[^\n]*?delete\s+shadows|wbadmin\s+delete|"
+                         r"bcdedit[^\n]*?(recoveryenabled|bootstatuspolicy))")
+RE_EVASION_CMD = re.compile(r"(?i)(wevtutil\s+cl|clear-eventlog|cipher\s+/w|"
+                            r"fsutil\s+usn\s+deletejournal|set-mppreference[^\n]*-disable|"
+                            r"add-mppreference[^\n]*-exclusion|auditpol[^\n]*/(clear|remove)|"
+                            r"netsh[^\n]*firewall[^\n]*\b(off|disable)\b)")
+# registry: a WRITE (EventID 12/13/14) to these locations
+RE_REG_PERSIST = re.compile(
+    r"(?i)(\\currentversion\\run(once)?(ex)?\\|\\winlogon\\(shell|userinit|notify)|"
+    r"\\image file execution options\\|\\silentprocessexit\\|"
+    r"\\currentversion\\explorer\\(user )?shell folders|\\policies\\explorer\\run|"
+    r"userinitmprlogonscript|\\inprocserver32|\\localserver32|\\appinit_dlls|"
+    r"\\microsoft\\netsh\\|\\control\\lsa\\(security|notification|authentication) packages|"
+    r"\\session manager\\bootexecute|\\print\\monitors\\|\\ntds\\directoryserviceextpt|"
+    r"\\windowsupdate\\orchestrator\\uscheduler|\\ieak\\grouppolicy\\pendinggpos)")
+RE_REG_SERVICE = re.compile(r"(?i)\\services\\[^\\]+\\(imagepath|parameters\\servicedll)")
+RE_REG_UAC = re.compile(
+    r"(?i)((ms-settings|folder|ms-browser|mscfile|exefile|launcher\.systemsettings|"
+    r"appx[0-9a-z]+)\\shell\\open\\command|delegateexecute|\\environment\\(windir|systemroot))")
+RE_REG_EVASION = re.compile(
+    r"(?i)(windows defender\\(exclusions|.*disable)|\\powershell\\(scriptblocklogging|"
+    r"modulelogging|transcription)|\\winevt\\channels\\[^\n]*\\enabled|"
+    r"lanmanserver\\parameters\\nullsession(pipes|shares)|"
+    r"\\policies\\system\\(enablelua|consentpromptbehavioradmin)|__pslockdownpolicy|"
+    r"\\control\\lsa\\runasppl)")
+RE_REG_SHIM = re.compile(r"(?i)\\appcompatflags\\(installedsdb|custom)\\")
+RE_REG_SAM = re.compile(r"(?i)\\sam\\sam\\domains\\(account\\users|builtin\\aliases)\\")
+RE_REG_CRED = re.compile(r"(?i)\\wdigest\\uselogoncredential")
+
+# LOLBins named in a command line (cmd /c certutil ..., powershell bitsadmin ...).
+# Short or English-word stems only count with the .exe suffix: `at`, `print`,
+# `replace` and `expand` occur in ordinary text.
+_WORDY = {"at", "print", "replace", "expand", "hh", "ftp", "sc", "reg", "msdt", "csc",
+          "jsc", "vbc"}
+RE_LOLBIN_CMD = re.compile(r"(?i)(" + "|".join(
+    (rf"\b{re.escape(b[:-4])}\.exe\b" if b[:-4] in _WORDY else rf"\b{re.escape(b[:-4])}(?:\.exe)?\b")
+    for b in sorted(LOLBINS, key=len, reverse=True))
+    + r"|\breg(?:\.exe)?\s+(?:add|import|save|export|delete)\b"
+    + r"|\bsc(?:\.exe)?\s+(?:create|config|start)\b)")
+
+# incriminating keys, strongest first: the output is capped at four, and
+# technique evidence must never be crowded out by generic properties
+PRIORITY = ["credential_access", "reverse_shell", "uac_bypass", "accessibility_hijack",
+            "app_shim_install", "persistence_autorun", "service_binary_created",
+            "defense_evasion", "account_manipulation", "remote_service_install",
+            "office_spawns_shell", "browser_spawns_shell", "proxy_execution",
+            "download_cradle", "encoded_command", "payload_dropped", "masquerading_name",
+            "service_host_spawns_proc", "temp_path_exec", "hidden_window",
+            "exec_policy_bypass", "unsigned_binary", "lolbin_exec", "discovery_command",
+            "smb_admin_share", "raw_ip_no_dns", "outbound_uncommon_port",
+            "privilege_escalation", "blank_or_guest_account", "legacy_auth_protocol",
+            "system_context_exec"]
+
+
+def _undecorated(name):
+    m = RE_DECORATED.match(name or "")
+    return m.group(1) if m else name
+
+
+def _at_home(name, d):
+    return d == HOME_DIR.get(name) or _in(d, SYSTEM_DIRS)
 
 # ---------------------------------------------------------------- parsing
 
@@ -149,8 +259,10 @@ def _clip(v, n=120):
 
 
 def extract(fields):
-    """Ordered {indicator: evidence}. Incriminating first, exculpatory last --
-    the model reads its own output left to right when it writes `reasoning`."""
+    """Ordered {indicator: evidence}. Incriminating first (by PRIORITY),
+    exculpatory last -- the model reads its own output left to right when it
+    writes `reasoning`. Every value is quoted from, or derived from, a field of
+    this event; hallucination_check.py verifies that for all training targets."""
     eid = str(fields.get("EventID", ""))
     img = fields.get("Image", "")
     par = fields.get("ParentImage", "")
@@ -160,77 +272,137 @@ def extract(fields):
     signed = str(fields.get("Signed", "")).lower()
     signer = fields.get("Signer", "")
     ib, pb, idir = _base(img), _base(par), _dir(img)
+    ibc = _undecorated(ib)
+    t = (tgt or "").lower()
+    reg_write = eid in ("12", "13", "14")
     bad, good = {}, {}
 
-    # --- lineage
+    def flag(k, v):
+        bad.setdefault(k, v)
+
+    # --- lineage: often the parent is the signal, not the child
     if pb in OFFICE and ib in SHELLS:
-        bad["office_spawns_shell"] = f"{pb} -> {ib}"
+        flag("office_spawns_shell", f"{pb} -> {ib}")
     elif pb in BROWSERS and ib in SHELLS:
-        bad["browser_spawns_shell"] = f"{pb} -> {ib}"
+        flag("browser_spawns_shell", f"{pb} -> {ib}")
     elif pb in SERVICE_HOSTS and ib and ib not in EXPECTED.get(pb, ()):
-        bad["service_host_spawns_proc"] = f"{pb} -> {ib}"
+        flag("service_host_spawns_proc", f"{pb} -> {ib}")
     elif pb and ib and ib in EXPECTED.get(pb, ()):
         good["expected_parent"] = f"{pb} -> {ib}"
+    if pb in PROXY_PARENTS and ib and ib not in EXPECTED.get(pb, ()):
+        flag("proxy_execution", f"{pb} -> {ib}")
+    if ib in AUTO_ELEVATE and pb and pb not in ELEVATE_LAUNCHERS:
+        flag("uac_bypass", f"{pb} -> {ib}")
+    elif pb in AUTO_ELEVATE and ib in SHELLS:
+        flag("uac_bypass", f"{pb} -> {ib}")
+    # the COM surrogate hosting an elevation moniker (CMSTPLUA and friends):
+    # a shell whose parent is dllhost.exe is a UAC bypass, not a COM object
+    if pb == "dllhost.exe" and ib in SHELLS:
+        flag("uac_bypass", f"{pb} -> {ib}")
+    if ib == "wusa.exe" and "/extract" in (cmd or "").lower():
+        flag("uac_bypass", cmd)
+    if ibc in ACCESSIBILITY and (not _in(idir, SYSTEM_DIRS)
+                                or (pb and pb not in ACCESS_LAUNCHERS)):
+        flag("accessibility_hijack", f"{pb} -> {ib}" if pb else img)
+    m = re.search(r'(?i)([a-z]:\\[^"\n]*\\(?:' + "|".join(
+        re.escape(a[:-4]) for a in ACCESSIBILITY) + r')\.exe)', cmd or "")
+    if m and "\\system32\\" not in m.group(1).lower():
+        flag("accessibility_hijack", m.group(1))
 
     # --- identity
     ul = user.lower()
     if "system" in ul and "localsystem" not in ul:
-        bad["system_context_exec"] = user
+        flag("system_context_exec", user)
     elif "local service" in ul or "network service" in ul:
         good["restricted_service_acct"] = user
-    if re.search(r"(?i)\\(guest|anonymous)$", user) or \
-            str(fields.get("AuthPackage", "")).lower() == "ntlm" and \
-            str(fields.get("LogonType", "")) == "3" and "guest" in ul:
-        bad["blank_or_guest_account"] = user
+    if re.search(r"(?i)\\(guest|anonymous)$", user):
+        flag("blank_or_guest_account", user)
     if str(fields.get("AuthPackage", "")).upper() in ("NTLM", "NTLMV1", "MSV1_0") \
             and eid in ("4624", "4625"):
-        bad["legacy_auth_protocol"] = fields.get("AuthPackage", "")
-    if str(fields.get("LogonType", "")) in ("0",) or \
-            re.search(r"(?i)(sedebugprivilege|setcbprivilege|token.*eleva)", cmd):
-        bad["privilege_escalation"] = _clip(cmd or fields.get("LogonType", ""))
+        flag("legacy_auth_protocol", fields.get("AuthPackage", ""))
+    if re.search(r"(?i)(sedebugprivilege|setcbprivilege)", cmd or ""):
+        flag("privilege_escalation", cmd)
 
-    # --- image / path
-    if eid in ("1", "4688"):
+    # --- the process itself, for EVERY event that names one. Restricting these
+    # to process creation missed binaries running from Temp whose only events
+    # were image loads ([1]consent.exe from ...\Temp\IDC1.tmp\).
+    if img:
         if _in(idir, TEMP_DIRS):
-            bad["temp_path_exec"] = img
-        if ib in SYSTEM_NAMES and not _in(idir, SYSTEM_DIRS):
-            bad["masquerading_name"] = img
+            flag("temp_path_exec", img)
+        if ibc != ib or (ibc in MASQ_NAMES and not _at_home(ibc, idir)):
+            flag("masquerading_name", img)
         if ib in LOLBINS:
-            bad["lolbin_exec"] = ib
+            flag("lolbin_exec", ib)
+        if ib == "sdbinst.exe":
+            flag("app_shim_install", cmd or img)
     if signed == "false":
-        bad["unsigned_binary"] = _base(tgt) or ib or "-"
+        flag("unsigned_binary", _base(tgt) or ib or "-")
     elif signed == "true" and signer:
-        (good if "microsoft" in signer.lower() else good)[
-            "signed_microsoft" if "microsoft" in signer.lower()
-            else "signed_known_vendor"] = signer
-    if idir and _in(idir, SYSTEM_DIRS):
+        good["signed_microsoft" if "microsoft" in signer.lower()
+             else "signed_known_vendor"] = signer
+    if idir and _at_home(ibc, idir):
         good["system32_path"] = idir
 
     # --- command line
     if cmd:
+        cl = cmd.lower()
+        if RE_CRED.search(cmd) or RE_APPCMD_CRED.search(cmd):
+            flag("credential_access", cmd)
+        if RE_REVSHELL.search(cmd):
+            flag("reverse_shell", cmd)
+        if RE_ACCOUNT.search(cmd):
+            flag("account_manipulation", cmd)
+        if RE_SVC_CREATE.search(cmd):
+            flag("service_binary_created", cmd)
+        if RE_RECOVERY.search(cmd) or RE_EVASION_CMD.search(cmd):
+            flag("defense_evasion", cmd)
         if RE_ENCODED.search(cmd):
-            bad["encoded_command"] = _clip(cmd)
+            flag("encoded_command", cmd)
         if RE_HIDDEN.search(cmd):
-            bad["hidden_window"] = _clip(cmd, 80)
+            flag("hidden_window", cmd)
         if RE_CRADLE.search(cmd):
-            bad["download_cradle"] = _clip(cmd)
+            flag("download_cradle", cmd)
         if RE_BYPASS.search(cmd):
-            bad["exec_policy_bypass"] = _clip(cmd, 80)
+            flag("exec_policy_bypass", cmd)
         if RE_DISCOVERY.search(cmd):
-            bad["discovery_command"] = _clip(cmd, 80)
+            flag("discovery_command", cmd)
+        m = RE_LOLBIN_CMD.search(cmd)
+        if m and "lolbin_exec" not in bad and _base(m.group(1).split()[0]) != ib:
+            flag("lolbin_exec", m.group(1))
 
-    # --- file / registry
-    if eid in ("11", "12", "13", "14"):
-        t = (tgt or "").lower()
-        if RE_AUTORUN.search(t):
-            bad["service_binary_created" if "\\services\\" in t
-                else "privilege_escalation" if "image file execution" in t
-                else "masquerading_name"] = tgt
-        if eid == "11" and (t.endswith(".exe") or t.endswith(".dll")) \
-                and _in(t, TEMP_DIRS):
-            bad["temp_path_exec"] = tgt
-        if eid == "11" and "\\system32\\" in t and t.endswith(".exe"):
-            bad["service_binary_created"] = tgt
+    # --- registry writes: the location says what the write is for
+    if reg_write and t:
+        if RE_REG_SERVICE.search(t):
+            flag("service_binary_created", tgt)
+        if RE_REG_PERSIST.search(t) or ("\\environment\\" in t
+                                        and "userinitmprlogonscript" in t):
+            flag("persistence_autorun", tgt)
+        if RE_REG_UAC.search(t):
+            flag("uac_bypass", tgt)
+        if RE_REG_EVASION.search(t):
+            flag("defense_evasion", tgt)
+        if RE_REG_SHIM.search(t):
+            flag("app_shim_install", tgt)
+        if RE_REG_SAM.search(t):
+            flag("account_manipulation", tgt)
+        if RE_REG_CRED.search(t):
+            flag("credential_access", tgt)
+
+    # --- image loads: a DLL loaded from a user-writable path is code running
+    # from there, whichever signed process loaded it (COM / DLL hijack)
+    if eid == "7" and t and _in(t, WRITABLE):
+        flag("temp_path_exec", tgt)
+
+    # --- file writes
+    if eid == "11" and t:
+        if t.endswith(".sdb"):
+            flag("app_shim_install", tgt)
+        if "\\start menu\\programs\\startup\\" in t:
+            flag("persistence_autorun", tgt)
+        if t.endswith(PAYLOAD_EXT) and _in(t, WRITABLE):
+            flag("payload_dropped", tgt)
+        if "\\system32\\" in t and t.endswith(".exe"):
+            flag("service_binary_created", tgt)
 
     # --- network
     if eid == "3":
@@ -241,62 +413,73 @@ def extract(fields):
             pn = int(port)
         except ValueError:
             pn = -1
-        if RE_ADMIN_SHARE.search(cmd or "") or pn in (445, 139):
-            bad["smb_admin_share"] = f"{dip}:{port}"
+        if pn in (445, 139):
+            flag("smb_admin_share", f"{dip}:{port}")
         if pn in (80, 443, 53, 123, 88, 389, 636, 3268):
             good["outbound_known_good"] = f"{dip}:{port}"
         elif pn >= 0 and pn not in (445, 139, 135, 3389, 5985, 5986):
-            bad["outbound_uncommon_port"] = f"{dip}:{port}"
+            flag("outbound_uncommon_port", f"{dip}:{port}")
         if not dns and RE_IP.match(dip):
-            bad["raw_ip_no_dns"] = dip
-    if RE_ADMIN_SHARE.search(cmd or "") or re.search(r"(?i)\b(psexec|sc\s+\\\\|"
-                                                     r"wmic\s+/node|winrs|"
-                                                     r"invoke-command\s+-computername)", cmd or ""):
-        bad["remote_service_install"] = _clip(cmd, 80)
+            flag("raw_ip_no_dns", dip)
+    if RE_ADMIN_SHARE.search(cmd or "") or re.search(
+            r"(?i)\b(psexec|sc\s+\\\\|wmic\s+/node|winrs|invoke-command\s+-computername)",
+            cmd or ""):
+        flag("remote_service_install", cmd)
 
+    ranked = sorted(bad.items(), key=lambda kv: PRIORITY.index(kv[0])
+                    if kv[0] in PRIORITY else len(PRIORITY))
     out = {}
-    for k, v in list(bad.items()) + list(good.items()):
+    for k, v in ranked + list(good.items()):
         if k in INDICATORS and k not in out:
             out[k] = _clip(v)
         if len(out) == 4:                        # OUTPUT_SCHEMA maxItems
             break
-    if not out:
-        out["expected_parent" if pb else "system32_path"] = \
-            _clip(f"{pb} -> {ib}" if pb else (idir or img or "-")) or "-"
+    # No fallback. The old one filed any directory under `system32_path` when
+    # nothing else fired -- 128 targets called a Desktop or Temp folder a
+    # system path. An event with nothing notable now says nothing.
     return out
 
 # ---------------------------------------------------------------- threatType
 
-# first match wins; ordered by specificity, not severity
+# first match wins; ordered by specificity, not severity. Types marked (v2)
+# exist only in the strict2 prompt's vocabulary; under v1 they fall back to
+# the nearest v1 type, see threat_type().
 THREAT_RULES = [
     ("credential_stuffing", lambda f, i, c: str(f.get("EventID")) == "4625"),
-    ("privilege_escalation", lambda f, i, c: "privilege_escalation" in i
+    ("credential_access", lambda f, i, c: "credential_access" in i                  # (v2)
+     or "account_manipulation" in i),
+    ("ransomware", lambda f, i, c: bool(RE_RECOVERY.search(c))),
+    ("privilege_escalation", lambda f, i, c: "uac_bypass" in i or "privilege_escalation" in i
      or "system_context_exec" in i and ("masquerading_name" in i or "temp_path_exec" in i)),
     ("lateral_movement", lambda f, i, c: "remote_service_install" in i
      or "smb_admin_share" in i),
+    ("defense_evasion", lambda f, i, c: "defense_evasion" in i),                     # (v2)
+    ("persistence", lambda f, i, c: "persistence_autorun" in i                       # (v2)
+     or "app_shim_install" in i or "accessibility_hijack" in i
+     or "service_binary_created" in i),
+    ("rce", lambda f, i, c: "reverse_shell" in i),
     ("data_exfiltration", lambda f, i, c: bool(re.search(
         r"(?i)(compress-archive|\brar\s+a\b|7z\s+a\b|invoke-webrequest[^|]*-method\s+post|"
         r"\bftp\b|uploadfile)", c))),
     ("reconnaissance", lambda f, i, c: "discovery_command" in i),
-    ("malware", lambda f, i, c: "download_cradle" in i or "encoded_command" in i
-     or "temp_path_exec" in i or "masquerading_name" in i
-     or "office_spawns_shell" in i or "browser_spawns_shell" in i),
     ("cryptomining", lambda f, i, c: bool(re.search(
         r"(?i)(xmrig|stratum\+tcp|minerd|nicehash)", c))),
-    ("ransomware", lambda f, i, c: bool(RE_ANTIFOREN.search(c))),
-    # persistence has no slot of its own in HIRA's threatType vocabulary; the
-    # closest honest label for "something arranged to run again later" is
-    # malware. Same for LOLBin abuse and unsigned code loading into a process.
-    ("malware", lambda f, i, c: str(f.get("EventID")) in ("11", "12", "13", "14")
-     and bool(RE_AUTORUN.search(c))),
-    ("malware", lambda f, i, c: "lolbin_exec" in i or "unsigned_binary" in i
-     or "service_binary_created" in i or "service_host_spawns_proc" in i
-     or "raw_ip_no_dns" in i or "outbound_uncommon_port" in i),
+    ("malware", lambda f, i, c: any(k in i for k in (
+        "download_cradle", "encoded_command", "temp_path_exec", "masquerading_name",
+        "office_spawns_shell", "browser_spawns_shell", "payload_dropped",
+        "proxy_execution", "lolbin_exec", "unsigned_binary", "service_host_spawns_proc",
+        "raw_ip_no_dns", "outbound_uncommon_port"))),
+    # after malware on purpose: a hidden-window download cradle is malware; a
+    # hidden window with nothing else is concealment (T1564.003)
+    ("defense_evasion", lambda f, i, c: "hidden_window" in i                        # (v2)
+     or "exec_policy_bypass" in i),
     ("unknown", lambda f, i, c: True),
 ]
+V1_FALLBACK = {"credential_access": "unknown", "defense_evasion": "malware",
+               "persistence": "malware"}
 
 
-def threat_type(fields, ind, gold):
+def threat_type(fields, ind, gold, vocab="v2"):
     if gold == "benign":
         return None
     cmd = " ".join(x for x in (fields.get("CommandLine", ""),
@@ -306,7 +489,7 @@ def threat_type(fields, ind, gold):
     for name, test in THREAT_RULES:
         try:
             if test(fields, ind, cmd):
-                return name
+                return V1_FALLBACK.get(name, name) if vocab == "v1" else name
         except Exception:
             continue
     return "unknown"
@@ -345,6 +528,16 @@ PHRASE = {
     "system32_path": "it executes from a system path",
     "expected_parent": "the parent-child relationship is normal",
     "restricted_service_acct": "it runs under a restricted service account",
+    "credential_access": "it reads or dumps credential material",
+    "account_manipulation": "it creates, hides or changes a local account",
+    "uac_bypass": "an auto-elevating binary is used outside its normal launch context",
+    "accessibility_hijack": "an accessibility binary is launched or replaced abnormally",
+    "app_shim_install": "it installs an application-compatibility shim",
+    "persistence_autorun": "it arranges for code to run later",
+    "defense_evasion": "it weakens a security control, log or recovery mechanism",
+    "proxy_execution": "the process was launched through a proxy binary",
+    "payload_dropped": "an executable or script is written to a user-writable location",
+    "reverse_shell": "a command shell is bound to a network connection",
 }
 
 VERDICT = {
@@ -352,6 +545,14 @@ VERDICT = {
     "suspicious": "This is consistent with legitimate administration but also with an "
                   "attack in progress, so it warrants review rather than a verdict.",
     "benign": "Nothing here departs from normal activity for this host.",
+}
+# used instead of VERDICT when no single field supports the verdict. Honest
+# about where the verdict comes from, and still a checkable sentence.
+VERDICT_CONTEXT = {
+    "malicious": "It is classified as malicious on the pattern of the event as a whole, "
+                 "not on any one indicator.",
+    "suspicious": "It warrants review on the pattern of the event as a whole, "
+                  "not on any one indicator.",
 }
 ACTION = {
     "EventID: 1": "Process creation", "EventID: 4688": "Process creation",
@@ -365,6 +566,11 @@ ACTION = {
 def reasoning(fields, ind, gold):
     head = ACTION.get(f"EventID: {fields.get('EventID','')}", "Event")
     img = _base(fields.get("Image", "")) or _base(fields.get("TargetFilename", "")) or "the subject"
+    if "context_dependent" in ind and gold != "benign":
+        facts = [PHRASE[k] for k in ind if k in BENIGN_KEYS and k in PHRASE]
+        seen = f" What it does show ({facts[0]}) does not explain the verdict." if facts else ""
+        return (f"{head} by {img}: no single field in this event is conclusive. "
+                f"{VERDICT_CONTEXT[gold]}{seen}")
     incrim = [PHRASE[k] for k in ind if k not in BENIGN_KEYS and k in PHRASE]
     excul = [PHRASE[k] for k in ind if k in BENIGN_KEYS and k in PHRASE]
     obs = incrim or excul
@@ -383,14 +589,21 @@ def reasoning(fields, ind, gold):
 # ---------------------------------------------------------------- assembly
 
 
-def build(row):
+def build(row, vocab="v2"):
     fields = parse(row["event"])
     ind = extract(fields)
     gold = row["gold"]
+    # A threat verdict with no incriminating evidence used to be explained with
+    # whatever reassuring evidence was left -- "signed by Microsoft, runs from
+    # System32, therefore malicious" -- and the model learned to say that on
+    # 67% of its alerts. Now the target says plainly that no field is
+    # conclusive, first, so the model commits to that before anything else.
+    if gold != "benign" and not any(k not in BENIGN_KEYS for k in ind):
+        ind = dict([("context_dependent", "-")] + list(ind.items())[:3])
     return {
         "severity": row["severity"],
         "isThreat": gold != "benign",
-        "threatType": threat_type(fields, ind, gold),
+        "threatType": threat_type(fields, ind, gold, vocab),
         "indicators": ind,
         "reasoning": reasoning(fields, ind, gold),
     }
