@@ -24,12 +24,14 @@ silently degrading classification.
 
 import argparse
 import hashlib
+import re
 import json
 from pathlib import Path
 
 import prompt as P
 from contract import FIELD_ORDER, MAX_CMDLINE, TRUNC_MARKER
 from indicators import INDICATORS
+from targets import BENIGN_KEYS
 
 # Input types this model can actually classify. It was trained on Windows
 # Sysmon telemetry rendered into FIELD_ORDER and nothing else; on anything
@@ -44,6 +46,12 @@ ESCALATE_THREAT_TYPES = [
     "lateral_movement", "data_exfiltration", "ransomware",
     "privilege_escalation", "supply_chain", "rce", "zero_day",
 ]
+
+
+def threat_types():
+    """The threatType list, read from the prompt itself so it cannot drift."""
+    m = re.search(r"threatType values you may use:\n(.*)", P.BASE, re.S)
+    return sorted(set(re.findall(r"[a-z_]+", m.group(1))))
 
 
 def build(variant="strict", scale="4way"):
@@ -87,6 +95,10 @@ def build(variant="strict", scale="4way"):
 
         # R6 -- closed indicator vocabulary.
         "indicators": sorted(INDICATORS),
+        # Indicators that argue FOR normality. A threat verdict citing only
+        # these is unsupported: the evidence shown does not explain it.
+        "exculpatory_indicators": sorted(BENIGN_KEYS),
+        "threat_types": threat_types(),
 
         "output_fields": ["severity", "isThreat", "threatType",
                           "indicators", "reasoning"],

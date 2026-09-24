@@ -111,6 +111,33 @@
     "temp_path_exec",
     "unsigned_binary"
   ],
+  "exculpatory_indicators": [
+    "expected_parent",
+    "outbound_known_good",
+    "restricted_service_acct",
+    "signed_known_vendor",
+    "signed_microsoft",
+    "system32_path"
+  ],
+  "threat_types": [
+    "credential_stuffing",
+    "cryptomining",
+    "data_exfiltration",
+    "failed_logins",
+    "lateral_movement",
+    "malware",
+    "phishing",
+    "port_scan",
+    "privilege_escalation",
+    "ransomware",
+    "rce",
+    "reconnaissance",
+    "sql_injection",
+    "supply_chain",
+    "traffic_spike",
+    "unknown",
+    "xss"
+  ],
   "output_fields": [
     "severity",
     "isThreat",
