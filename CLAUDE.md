@@ -43,21 +43,30 @@ prompt_sha256 `8906351f…`). `contract.json` is bound to it.
 | unsupported alerts (`logs/hallucination_*.json`) | 49 | **1** |
 | parse failures | 0 | 2 (M010, X021) |
 
-The target rewrite fixed explanations. Severity regressed and the cause is
-confounded: the quarantine dropped 12 malicious + 17 suspicious rows, the
-prompt changed, and the targets changed, all at once. v3's checkpoint curve is
-noisy (86-92%), so part of v3's 92% is selection on the eval set; final vs
-final is 89.1% vs 86.2%. v5 was still improving at its last step.
+The target rewrite fixed explanations. Most of the accuracy gap is not a
+regression: at matched final checkpoints v3 and v5 both score 107/122 on the
+events whose action is absent from training (`python3 compare_runs.py`); v3's
+92% was the best of ten checkpoints picked on this eval set, and v5 lost 4 of
+the 16 overlap events because the quarantine removed their training twins.
+What is real: on clean malicious events v5's P(gold) fell from 0.79 to 0.67.
 
-## Next (v6)
+## v6 (in progress, started 2026-09-26)
 
-1. Indicator values should quote the matched span (`-w hidden`, `-enc`), not
-   the 120-char command-line prefix. Today one prefix is repeated under 3-4
-   keys, and on long encoded PowerShell the model copies the whole command line
-   under each key and runs out of tokens (the two v5 parse failures).
-2. Logon events (4624/4625) have ~26 training rows and almost no indicator
-   keys; v5 invents `negotiate_auth` / `ntlm_auth`. Add rows or keys.
-3. Find the severity regression by changing one thing per run.
+Data changes, all validated by the gate check (0 failures on 2,070 targets):
+
+1. Indicator values quote the span their rule matched (`-w hidden`,
+   `FromBase64String`, the URL of a cradle), not the 120-char command-line
+   prefix that v5 learned to copy until it ran out of tokens.
+2. Logons: keys `interactive_logon`, `service_logon`, `kerberos_auth`
+   (exculpatory) and `new_credentials_logon`, `remote_interactive_logon`,
+   `failed_logon`; 53 rows from `gen_logons.py` (TL###) following the labels of
+   the real logons. 4624 type 3 NTLM and types 7/11 Negotiate are eval-only
+   actions and are not generated.
+
+Severity ablation, one change per run (`./run_ablation.sh`, ~2.5 h each):
+`v6` (candidate), `v6-seed2` (noise floor, read first), `v6-strict` (prompt),
+`v6-noquar` (quarantine; compare on clean only). Compare with
+`compare_runs.py v5=logs/v5/ckpt_step460.json v6=logs/v6/ckpt_v6.json ...`.
 
 After any target change: rerun the gate check above, then `build_sft.py
 --variant strict2 --eval-set eval_set_v3.jsonl`, then train locally.

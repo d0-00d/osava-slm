@@ -50,6 +50,9 @@ def main():
     ap.add_argument("--val-frac", type=float, default=0.08)
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--out-prefix", default="sft")
+    ap.add_argument("--no-action-quarantine", action="store_true",
+                    help="ablation only: keep training rows that share an eval action. "
+                         "Score such a model on the clean subset (compare_runs.py)")
     args = ap.parse_args()
 
     rows = [json.loads(l) for l in Path(args.train).read_text().splitlines() if l.strip()]
@@ -68,7 +71,7 @@ def main():
     # byte-identical commands -- 16 of the original 50 eval events shared their
     # action with training. Any training row whose action (parent aside)
     # appears in the eval set is dropped, whatever produced it.
-    ev_act = {pblind(r) for r in ev}
+    ev_act = {pblind(r) for r in ev} if not args.no_action_quarantine else set()
     before = len(rows)
     dropped = Counter(r["gold"] for r in rows if pblind(r) in ev_act)
     rows = [r for r in rows if pblind(r) not in ev_act]

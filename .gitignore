@@ -16,6 +16,7 @@ group_index.json
 
 # Regenerable from the committed data
 sft_train.jsonl
+sft_*.jsonl
 sft_val.jsonl
 train_real.jsonl
 train_pool*.jsonl
