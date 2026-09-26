@@ -186,6 +186,17 @@ RE_REG_EVASION = re.compile(
 RE_REG_SHIM = re.compile(r"(?i)\\appcompatflags\\(installedsdb|custom)\\")
 RE_REG_SAM = re.compile(r"(?i)\\sam\\sam\\domains\\(account\\users|builtin\\aliases)\\")
 RE_REG_CRED = re.compile(r"(?i)\\wdigest\\uselogoncredential")
+RE_WUSA_EXTRACT = re.compile(r"(?i)/extract:?\S*")
+RE_PRIV = re.compile(r"(?i)(sedebugprivilege|setcbprivilege)")
+RE_SDB = re.compile(r"(?i)[^\s\"]+\.sdb\b")
+RE_REMOTE_EXEC = re.compile(r"(?i)\b(psexec\w*|sc\s+\\\\\S+|wmic\s+/node:?\S*|winrs\w*|"
+                            r"invoke-command\s+-computername\s+\S+)")
+RE_APPCMD_TEXT = re.compile(r"(?i)/text:\S+")
+# preferred quotes where the firing regex's leftmost match is the weaker one
+RE_ENC_BLOB = re.compile(r"(?i)-e(?:nc|ncoded)?(?:command)?\s+[A-Za-z0-9+/=]{16,}")
+RE_FROMB64 = re.compile(r"(?i)frombase64string")
+RE_EXEC_BYPASS = re.compile(r"(?i)-ex(?:ec)?(?:utionpolicy)?\s+(?:bypass|unrestricted)")
+RE_URL = re.compile(r"(?i)https?://[^\s'\"()]+")
 
 # LOLBins named in a command line (cmd /c certutil ..., powershell bitsadmin ...).
 # Short or English-word stems only count with the .exe suffix: `at`, `print`,
@@ -198,6 +209,23 @@ RE_LOLBIN_CMD = re.compile(r"(?i)(" + "|".join(
     + r"|\breg(?:\.exe)?\s+(?:add|import|save|export|delete)\b"
     + r"|\bsc(?:\.exe)?\s+(?:create|config|start)\b)")
 
+# Command-line rules: (key, regexes that fire it, regexes that pick the quote).
+# The quote is the first match among the quote regexes, else the firing match.
+# A cradle is quoted by its URL when it has one: the URL is the evidence, the
+# verb is already in the key.
+CMD_RULES = [
+    ("credential_access", (RE_CRED, RE_APPCMD_CRED), (RE_CRED, RE_APPCMD_TEXT)),
+    ("reverse_shell", (RE_REVSHELL,), ()),
+    ("account_manipulation", (RE_ACCOUNT,), ()),
+    ("service_binary_created", (RE_SVC_CREATE,), ()),
+    ("defense_evasion", (RE_RECOVERY, RE_EVASION_CMD), ()),
+    ("encoded_command", (RE_ENCODED,), (RE_ENC_BLOB, RE_FROMB64)),
+    ("hidden_window", (RE_HIDDEN,), ()),
+    ("download_cradle", (RE_CRADLE,), (RE_URL,)),
+    ("exec_policy_bypass", (RE_BYPASS,), (RE_EXEC_BYPASS,)),
+    ("discovery_command", (RE_DISCOVERY,), ()),
+]
+
 # incriminating keys, strongest first: the output is capped at four, and
 # technique evidence must never be crowded out by generic properties
 PRIORITY = ["credential_access", "reverse_shell", "uac_bypass", "accessibility_hijack",
@@ -208,7 +236,8 @@ PRIORITY = ["credential_access", "reverse_shell", "uac_bypass", "accessibility_h
             "service_host_spawns_proc", "temp_path_exec", "hidden_window",
             "exec_policy_bypass", "unsigned_binary", "lolbin_exec", "discovery_command",
             "smb_admin_share", "raw_ip_no_dns", "outbound_uncommon_port",
-            "privilege_escalation", "blank_or_guest_account", "legacy_auth_protocol",
+            "privilege_escalation", "new_credentials_logon", "remote_interactive_logon",
+            "blank_or_guest_account", "legacy_auth_protocol", "failed_logon",
             "system_context_exec"]
 
 
@@ -255,6 +284,19 @@ def _clip(v, n=120):
     v = " ".join(str(v).split())
     return v if len(v) <= n else v[: n - 1] + "\u2026"
 
+
+# A command-line indicator quotes what its rule matched (`-w hidden`,
+# `-enc JABzAD0A…`, `vssadmin delete shadows`), not the command line. Quoting
+# the whole line put the same 120-char prefix under three or four keys, and
+# the model learned to copy: on a 700-char encoded PowerShell it wrote the
+# full line under every key and ran out of tokens before closing the JSON.
+SPAN = 48
+
+
+def _span(rx, s, n=SPAN):
+    m = rx.search(s or "")
+    return _clip(m.group(0).strip("\"' "), n) if m else None
+
 # ---------------------------------------------------------------- indicators
 
 
@@ -300,7 +342,7 @@ def extract(fields):
     if pb == "dllhost.exe" and ib in SHELLS:
         flag("uac_bypass", f"{pb} -> {ib}")
     if ib == "wusa.exe" and "/extract" in (cmd or "").lower():
-        flag("uac_bypass", cmd)
+        flag("uac_bypass", _span(RE_WUSA_EXTRACT, cmd))
     if ibc in ACCESSIBILITY and (not _in(idir, SYSTEM_DIRS)
                                 or (pb and pb not in ACCESS_LAUNCHERS)):
         flag("accessibility_hijack", f"{pb} -> {ib}" if pb else img)
@@ -311,30 +353,49 @@ def extract(fields):
 
     # --- identity
     ul = user.lower()
-    if "system" in ul and "localsystem" not in ul:
+    logon = eid in ("4624", "4625")
+    # a logon names the account that logged on, not a process running as it:
+    # SYSTEM starting a service is the most ordinary logon there is
+    if "system" in ul and "localsystem" not in ul and not logon:
         flag("system_context_exec", user)
     elif "local service" in ul or "network service" in ul:
         good["restricted_service_acct"] = user
-    if re.search(r"(?i)\\(guest|anonymous)$", user):
+    if re.search(r"(?i)\\(guest|anonymous|anonymous logon)$", user):
         flag("blank_or_guest_account", user)
-    if str(fields.get("AuthPackage", "")).upper() in ("NTLM", "NTLMV1", "MSV1_0") \
-            and eid in ("4624", "4625"):
-        flag("legacy_auth_protocol", fields.get("AuthPackage", ""))
-    if re.search(r"(?i)(sedebugprivilege|setcbprivilege)", cmd or ""):
-        flag("privilege_escalation", cmd)
+    auth = str(fields.get("AuthPackage", ""))
+    if logon and auth.upper() in ("NTLM", "NTLMV1", "MSV1_0",
+                                  "MICROSOFT_AUTHENTICATION_PACKAGE_V1_0"):
+        flag("legacy_auth_protocol", auth)
+    if logon:
+        lt = str(fields.get("LogonType", ""))
+        if eid == "4625":
+            flag("failed_logon", fields.get("EventType") or "Failed Logon")
+        if lt == "9":
+            flag("new_credentials_logon", f"LogonType: {lt}")
+        elif lt == "10":
+            flag("remote_interactive_logon", f"LogonType: {lt}")
+        elif lt in ("2", "7", "11"):
+            good["interactive_logon"] = f"LogonType: {lt}"
+        elif lt in ("0", "4", "5"):
+            good["service_logon"] = f"LogonType: {lt}"
+        if auth.lower() == "kerberos":
+            good["kerberos_auth"] = auth
+    if v := _span(RE_PRIV, cmd):
+        flag("privilege_escalation", v)
 
     # --- the process itself, for EVERY event that names one. Restricting these
     # to process creation missed binaries running from Temp whose only events
     # were image loads ([1]consent.exe from ...\Temp\IDC1.tmp\).
     if img:
         if _in(idir, TEMP_DIRS):
-            flag("temp_path_exec", img)
+            # the directory is the evidence; the full path is masquerading's
+            flag("temp_path_exec", img.rsplit("\\", 1)[0])
         if ibc != ib or (ibc in MASQ_NAMES and not _at_home(ibc, idir)):
             flag("masquerading_name", img)
         if ib in LOLBINS:
             flag("lolbin_exec", ib)
         if ib == "sdbinst.exe":
-            flag("app_shim_install", cmd or img)
+            flag("app_shim_install", _span(RE_SDB, cmd) or img)
     if signed == "false":
         flag("unsigned_binary", _base(tgt) or ib or "-")
     elif signed == "true" and signer:
@@ -345,27 +406,9 @@ def extract(fields):
 
     # --- command line
     if cmd:
-        cl = cmd.lower()
-        if RE_CRED.search(cmd) or RE_APPCMD_CRED.search(cmd):
-            flag("credential_access", cmd)
-        if RE_REVSHELL.search(cmd):
-            flag("reverse_shell", cmd)
-        if RE_ACCOUNT.search(cmd):
-            flag("account_manipulation", cmd)
-        if RE_SVC_CREATE.search(cmd):
-            flag("service_binary_created", cmd)
-        if RE_RECOVERY.search(cmd) or RE_EVASION_CMD.search(cmd):
-            flag("defense_evasion", cmd)
-        if RE_ENCODED.search(cmd):
-            flag("encoded_command", cmd)
-        if RE_HIDDEN.search(cmd):
-            flag("hidden_window", cmd)
-        if RE_CRADLE.search(cmd):
-            flag("download_cradle", cmd)
-        if RE_BYPASS.search(cmd):
-            flag("exec_policy_bypass", cmd)
-        if RE_DISCOVERY.search(cmd):
-            flag("discovery_command", cmd)
+        for key, fire, quote in CMD_RULES:
+            if any(rx.search(cmd) for rx in fire):
+                flag(key, next(v for rx in (*quote, *fire) if (v := _span(rx, cmd))))
         m = RE_LOLBIN_CMD.search(cmd)
         if m and "lolbin_exec" not in bad and _base(m.group(1).split()[0]) != ib:
             flag("lolbin_exec", m.group(1))
@@ -421,10 +464,8 @@ def extract(fields):
             flag("outbound_uncommon_port", f"{dip}:{port}")
         if not dns and RE_IP.match(dip):
             flag("raw_ip_no_dns", dip)
-    if RE_ADMIN_SHARE.search(cmd or "") or re.search(
-            r"(?i)\b(psexec|sc\s+\\\\|wmic\s+/node|winrs|invoke-command\s+-computername)",
-            cmd or ""):
-        flag("remote_service_install", cmd)
+    if v := _span(RE_ADMIN_SHARE, cmd) or _span(RE_REMOTE_EXEC, cmd):
+        flag("remote_service_install", v)
 
     ranked = sorted(bad.items(), key=lambda kv: PRIORITY.index(kv[0])
                     if kv[0] in PRIORITY else len(PRIORITY))
@@ -452,7 +493,10 @@ THREAT_RULES = [
     ("privilege_escalation", lambda f, i, c: "uac_bypass" in i or "privilege_escalation" in i
      or "system_context_exec" in i and ("masquerading_name" in i or "temp_path_exec" in i)),
     ("lateral_movement", lambda f, i, c: "remote_service_install" in i
-     or "smb_admin_share" in i),
+     or "smb_admin_share" in i or "new_credentials_logon" in i
+     or "remote_interactive_logon" in i
+     # NTLM on a network logon is the shape pass-the-hash leaves (T1550.002)
+     or "legacy_auth_protocol" in i and str(f.get("LogonType")) == "3"),
     ("defense_evasion", lambda f, i, c: "defense_evasion" in i),                     # (v2)
     ("persistence", lambda f, i, c: "persistence_autorun" in i                       # (v2)
      or "app_shim_install" in i or "accessibility_hijack" in i
@@ -497,7 +541,8 @@ def threat_type(fields, ind, gold, vocab="v2"):
 # ---------------------------------------------------------------- reasoning
 
 BENIGN_KEYS = {"signed_microsoft", "signed_known_vendor", "system32_path",
-               "expected_parent", "restricted_service_acct", "outbound_known_good"}
+               "expected_parent", "restricted_service_acct", "outbound_known_good",
+               "interactive_logon", "service_logon", "kerberos_auth"}
 
 PHRASE = {
     "office_spawns_shell": "an Office application spawned a shell",
@@ -538,6 +583,12 @@ PHRASE = {
     "proxy_execution": "the process was launched through a proxy binary",
     "payload_dropped": "an executable or script is written to a user-writable location",
     "reverse_shell": "a command shell is bound to a network connection",
+    "new_credentials_logon": "it is a logon with alternate credentials for outbound use",
+    "remote_interactive_logon": "it is a Remote Desktop logon",
+    "failed_logon": "authentication failed",
+    "interactive_logon": "it is an interactive logon at the console",
+    "service_logon": "it is a system, scheduled-task or service logon",
+    "kerberos_auth": "it authenticated with Kerberos",
 }
 
 VERDICT = {
@@ -565,7 +616,8 @@ ACTION = {
 
 def reasoning(fields, ind, gold):
     head = ACTION.get(f"EventID: {fields.get('EventID','')}", "Event")
-    img = _base(fields.get("Image", "")) or _base(fields.get("TargetFilename", "")) or "the subject"
+    img = (_base(fields.get("Image", "")) or _base(fields.get("TargetFilename", ""))
+           or fields.get("User") or "the subject")
     if "context_dependent" in ind and gold != "benign":
         facts = [PHRASE[k] for k in ind if k in BENIGN_KEYS and k in PHRASE]
         seen = f" What it does show ({facts[0]}) does not explain the verdict." if facts else ""
@@ -580,8 +632,10 @@ def reasoning(fields, ind, gold):
     if incrim and excul and gold != "benign":
         tail = f" The mitigating evidence ({excul[0]}) does not outweigh it."
     elif incrim and gold == "benign":
-        tail = f" {excul[0].capitalize()}, which accounts for it." if excul else \
-               " The pattern is documented normal behaviour for this binary."
+        routine = (" On its own, for an ordinary account, this is routine."
+                   if str(fields.get("EventID")) in ("4624", "4625")
+                   else " The pattern is documented normal behaviour for this binary.")
+        tail = f" {excul[0].capitalize()}, which accounts for it." if excul else routine
     else:
         tail = ""
     return f"{head} by {img}: {joined}. {VERDICT[gold]}{tail}"

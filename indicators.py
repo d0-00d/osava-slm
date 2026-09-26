@@ -45,6 +45,12 @@ INDICATORS = {
     "proxy_execution":          "Process launched through a proxy binary or WMI provider",
     "payload_dropped":          "Executable or script written to a user-writable location",
     "reverse_shell":            "Command shell bound to a network connection",
+    # logons (4624/4625). With only User, LogonType, AuthPackage and a source
+    # address to go on, the model had no words for what it saw and invented
+    # `negotiate_auth` / `ntlm_auth`.
+    "new_credentials_logon":    "LogonType 9: alternate credentials for outbound use (runas /netonly, pass-the-hash)",
+    "remote_interactive_logon": "LogonType 10: Remote Desktop logon",
+    "failed_logon":             "Authentication attempt failed",
     # honesty key: the verdict rests on the event as a whole, and no single
     # field supports it. Emitted instead of padding with reassuring evidence.
     "context_dependent":        "No single field is conclusive; the verdict rests on the event as a whole",
@@ -54,6 +60,9 @@ INDICATORS = {
     "system32_path":            "Executed from System32 / Program Files",
     "expected_parent":          "Parent-child relationship is normal for this binary",
     "restricted_service_acct":  "Runs as LOCAL SERVICE / NETWORK SERVICE",
+    "interactive_logon":        "LogonType 2/7/11: console logon, unlock, or cached interactive logon",
+    "service_logon":            "LogonType 0/4/5: system, scheduled-task or service logon",
+    "kerberos_auth":            "Authenticated with Kerberos",
 }
 
 CATEGORIES = ["benign", "suspicious", "malicious"]
