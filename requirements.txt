@@ -1,0 +1,11 @@
+torch==2.6.0
+transformers==5.5.0
+tokenizers==0.22.2
+safetensors==0.8.0
+peft==0.20.0
+trl==0.24.0
+accelerate==1.14.0
+datasets==4.3.0
+bitsandbytes==0.50.2
+numpy==2.5.2
+python-evtx==0.8.1

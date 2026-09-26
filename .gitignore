@@ -36,3 +36,9 @@ logs/v3/*
 !logs/v3/ref_*.json
 !logs/v3/ckpt_step282.json
 !logs/v3/merged_verify.json
+!logs/v5/
+logs/v5/*
+!logs/v5/ckpt_step460.json
+!logs/hallucination_bf16.json
+!logs/hallucination_llama.json
+!logs/hallucination_v5.json
