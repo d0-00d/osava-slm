@@ -71,6 +71,13 @@ Severity ablation, one change per run (`./run_ablation.sh`, ~2.5 h each):
 After any target change: rerun the gate check above, then `build_sft.py
 --variant strict2 --eval-set eval_set_v3.jsonl`, then train locally.
 
+## Training on the laptop
+
+Run GPU jobs under `gpu_watchdog.py`: it reads the GDDR6 junction temperature
+from HWiNFO's CSV log (nvidia-smi cannot see it on this card) and stops the
+jobs above 85 C, or if the log goes stale. Jobs resume from their last
+checkpoint.
+
 ## Rules
 
 - **The repo is public.** Never commit raw telemetry: `*.evtx`, or the output
@@ -87,9 +94,13 @@ After any target change: rerun the gate check above, then `build_sft.py
 ## Consumers of contract.json
 
 - **OSAVA** (`d0-00d/osava`, branch `feat/behaviour-classifier`): llama-server
-  sidecar, copy at `backend/src/services/behaviour/contract.json`. Held-out:
-  124/138 on the deployed Q4, byte parity with this repo's converter on 5,267
-  records.
+  sidecar, copy at `backend/src/services/behaviour/contract.json`. The model is
+  asked for severity only (one token, read from its probabilities); OSAVA's
+  `explain.ts` computes indicators, threatType and reasoning -- a port of
+  `targets.py`, so **any change to targets.py must be ported to explain.ts** and
+  re-checked with `parity/make_explain_fixture.py` + `npm run parity-explain`.
+  Held-out: 124/138, 219 ms/event on the iGPU, 7/7 hallucination checks
+  (`logs/hallucination_readout.json`).
 - **HIRA** (`Basith-S/HIRA`, PR #1): Ollama path. Known bugs: `buildContractPrompt`
   uses string `.replace`, so `$&`/`$'` in an event corrupt the prompt; its
   renderer lacks the Signed/Signer backfill.

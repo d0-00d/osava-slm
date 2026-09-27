@@ -43,3 +43,10 @@ logs/v5/*
 !logs/hallucination_bf16.json
 !logs/hallucination_llama.json
 !logs/hallucination_v5.json
+!logs/hallucination_readout.json
+!logs/v6/
+logs/v6/*
+!logs/v6/ckpt_step472.json
+!logs/v6-seed2/
+logs/v6-seed2/*
+!logs/v6-seed2/ckpt_step472.json

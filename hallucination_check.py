@@ -116,17 +116,17 @@ def check(event, raw):
 VARIANT = "strict"
 
 
-def generate(model_path, rows, max_new):
+def generate(model_path, rows, max_new, device="cuda:0"):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     tok = AutoTokenizer.from_pretrained(model_path)
     m = AutoModelForCausalLM.from_pretrained(
-        model_path, dtype=torch.bfloat16, device_map="cuda:0",
+        model_path, dtype=torch.bfloat16, device_map=device,
         attn_implementation="sdpa").eval()
     out = {}
     for i, r in enumerate(rows, 1):
         p = P.build_prompt(tok, r["event"], VARIANT, "4way")
-        ids = tok(p, return_tensors="pt", add_special_tokens=False).input_ids.to("cuda:0")
+        ids = tok(p, return_tensors="pt", add_special_tokens=False).input_ids.to(device)
         with torch.no_grad():
             g = m.generate(ids, max_new_tokens=max_new, do_sample=False,
                            pad_token_id=tok.eos_token_id)
@@ -142,6 +142,8 @@ def main():
     ap.add_argument("--responses", default=None,
                     help="JSON {id: raw_text} from another runtime, e.g. Ollama")
     ap.add_argument("--max-new", type=int, default=240)
+    ap.add_argument("--device", default="cuda:0",
+                    help="cpu works (slowly) while the GPU is busy training")
     ap.add_argument("--out", default="logs/hallucination.json")
     ap.add_argument("--variant", default="strict", choices=list(P.TAIL),
                     help="prompt variant: sets the threatType list checked against")
@@ -155,7 +157,7 @@ def main():
     if args.responses:
         raw = json.loads(Path(args.responses).read_text(encoding="utf-8-sig"))
     else:
-        raw = generate(args.model, rows, args.max_new)
+        raw = generate(args.model, rows, args.max_new, args.device)
 
     recs = {r["id"]: check(r["event"], raw[r["id"]]) for r in rows if r["id"] in raw}
     n = len(recs)
