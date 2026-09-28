@@ -1,4 +1,4 @@
-# osava-ft — SENTRI-Classifier training data
+# osava-slm — SENTRI-Classifier training data
 
 Builds the eval and training sets for the SmolLM3-3B intake classifier that
 replaces `phi3:mini` in HIRA/OSAVA. See the PRD for goals and metrics.
