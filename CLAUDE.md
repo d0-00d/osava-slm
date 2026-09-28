@@ -76,7 +76,9 @@ After any target change: rerun the gate check above, then `build_sft.py
 Run GPU jobs under `gpu_watchdog.py`: it reads the GDDR6 junction temperature
 from HWiNFO's CSV log (nvidia-smi cannot see it on this card) and stops the
 jobs above 85 C, or if the log goes stale. Jobs resume from their last
-checkpoint.
+checkpoint. `run_guarded.sh <hwinfo.csv> <command...>` does the whole thing:
+waits for a live log, starts the watchdog, runs the command, and stops it if
+the watchdog exits. Start each HWiNFO log as a fresh file.
 
 ## Rules
 
